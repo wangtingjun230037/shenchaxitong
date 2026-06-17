@@ -72,14 +72,14 @@ router.post('/:id/approve', authRequired, asyncHandler(async (req, res) => {
 }));
 
 /**
- * 驳回
+ * 驳回（支持选择驳回目标：CREATOR 退回给发起人 / PREV_NODE 退回至上一节点）
  */
 router.post('/:id/reject', authRequired, asyncHandler(async (req, res) => {
   const id = parseInt(req.params.id);
-  const { comment } = req.body || {};
-  await reject(id, req.user, comment);
-  await writeAudit(req, 'TASK_REJECT', 'ApprovalTask', id);
-  res.json({ ok: true });
+  const { comment, rejectTarget } = req.body || {};
+  const result = await reject(id, req.user, comment, rejectTarget);
+  await writeAudit(req, 'TASK_REJECT', 'ApprovalTask', id, { rejectTarget });
+  res.json(result);
 }));
 
 module.exports = router;

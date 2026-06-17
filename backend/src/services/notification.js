@@ -101,6 +101,20 @@ async function onPlanRejected(plan, comment, approverName) {
 }
 
 /**
+ * 方案被回退到上一节点 → 通知发起人
+ */
+async function onPlanRollback(plan, comment, approverName, targetNodeName) {
+  await createOne(
+    plan.createdById,
+    'PLAN_REJECTED',
+    `方案被退回：${plan.name}`,
+    `${approverName || '审批人'}将方案退回至【${targetNodeName || '上一节点'}】：${comment || '请查看详情'}`,
+    'Plan',
+    plan.id
+  );
+}
+
+/**
  * AI 审核完成（SUCCESS）→ 通知发起人
  */
 async function onAIReportDone(plan, dimension, score) {
@@ -137,6 +151,7 @@ module.exports = {
   onPlanSubmitted,
   onPlanApproved,
   onPlanRejected,
+  onPlanRollback,
   onAIReportDone,
   onAnnouncementPublished,
 };

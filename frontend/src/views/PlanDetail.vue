@@ -336,12 +336,45 @@
           </template>
           <el-input v-model="actionComment" type="textarea" :rows="2" placeholder="请输入审批意见（驳回必填）" />
           <div style="margin-top: 10px; text-align: right">
-            <el-button type="danger" plain :loading="acting" @click="onReject">驳回</el-button>
+            <el-button type="danger" plain :loading="acting" @click="openRejectDialog">驳回</el-button>
             <el-button type="primary" :loading="acting" @click="onApprove">同意 · 流转至下一节点</el-button>
           </div>
         </el-card>
       </el-col>
     </el-row>
+
+    <!-- 驳回对话框：选择驳回目标 -->
+    <el-dialog
+      v-model="rejectDialogVisible"
+      title="驳回方案"
+      width="500px"
+      :close-on-click-modal="false"
+      append-to-body
+    >
+      <el-form label-width="84px" :model="{ rejectTarget }">
+        <el-form-item label="审批意见" required>
+          <el-input v-model="rejectComment" type="textarea" :rows="3" placeholder="请填写驳回原因" />
+        </el-form-item>
+        <el-form-item v-if="canRollback" label="驳回至">
+          <el-radio-group v-model="rejectTarget">
+            <el-radio value="CREATOR">发起人（退回修改）</el-radio>
+            <el-radio value="PREV_NODE">
+              上一节点：<b style="color: #e6a23c">{{ previousNode?.name || '上一审批节点' }}</b>
+            </el-radio>
+          </el-radio-group>
+          <div class="muted" style="font-size: 12px; margin-top: 4px">
+            选择"上一节点"后，方案将回到 <b>{{ previousNode?.name }}</b> 重新审批，发起人无需修改文档
+          </div>
+        </el-form-item>
+        <el-form-item v-else label="驳回至">
+          <el-tag size="small" type="info">当前已是流程第一个审批节点，只能退回给发起人</el-tag>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="rejectDialogVisible = false">取消</el-button>
+        <el-button type="danger" :loading="acting" @click="confirmReject">确认驳回</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -369,6 +402,9 @@ const submitting = ref(false);
 const acting = ref(false);
 const triggering = ref(false);
 const actionComment = ref('');
+const rejectDialogVisible = ref(false);
+const rejectComment = ref('');
+const rejectTarget = ref('CREATOR');
 const previewEl = ref(null);
 const previewReady = ref(false);
 const timelineRef = ref(null);
@@ -393,6 +429,21 @@ const currentTask = computed(() => plan.value?.tasks?.find((t) => t.action === '
 const canHandleTask = computed(() => {
   const t = currentTask.value;
   return t && t.roleRequired === user.role && plan.value?.status !== 'PUBLISHED';
+});
+
+// 当前节点的"上一节点"（用于驳回回退选项）
+const previousNode = computed(() => {
+  const steps = progress.value.steps;
+  const code = plan.value?.currentNodeCode;
+  if (!steps?.length || !code) return null;
+  const idx = steps.findIndex((s) => s.code === code);
+  if (idx > 0) return steps[idx - 1];
+  return null;
+});
+// 仅当上一节点是真正的审批节点（不是 START/END/NOTIFY）时才显示回退选项
+const canRollback = computed(() => {
+  const p = previousNode.value;
+  return !!p && !['START', 'END', 'NOTIFY'].includes(p.code);
 });
 
 const scoreColor = computed(() => {
@@ -556,17 +607,33 @@ async function onApprove() {
   } finally { acting.value = false; }
 }
 
-async function onReject() {
+function openRejectDialog() {
   if (!currentTask.value) return;
-  if (!actionComment.value.trim()) return ElMessage.warning('驳回必须填写意见');
-  try {
-    await ElMessageBox.confirm('确认驳回此方案？方案将回到草稿状态。', '驳回确认', { type: 'warning' });
-  } catch (_) { return; }
+  // 优先复用"当前审批操作"区已填的意见；未填则在对话框内补充
+  rejectComment.value = actionComment.value || '';
+  // 默认目标：可回退 → 上一节点；不可回退 → 发起人
+  rejectTarget.value = canRollback.value ? 'PREV_NODE' : 'CREATOR';
+  rejectDialogVisible.value = true;
+}
+
+async function confirmReject() {
+  if (!currentTask.value) return;
+  if (!rejectComment.value.trim()) {
+    return ElMessage.warning('驳回必须填写意见');
+  }
   acting.value = true;
   try {
-    await request.post(`/tasks/${currentTask.value.id}/reject`, { comment: actionComment.value });
-    ElMessage.success('已驳回');
+    const res = await request.post(`/tasks/${currentTask.value.id}/reject`, {
+      comment: rejectComment.value,
+      rejectTarget: rejectTarget.value,
+    });
+    const msg = res?.target === 'PREV_NODE'
+      ? `已驳回至【${res.targetNodeName}】，等待重新审批`
+      : '已驳回，方案回到草稿';
+    ElMessage.success(msg);
+    rejectDialogVisible.value = false;
     actionComment.value = '';
+    rejectComment.value = '';
     await loadPlan();
   } finally { acting.value = false; }
 }

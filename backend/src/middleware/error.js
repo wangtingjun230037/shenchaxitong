@@ -21,9 +21,16 @@ function asyncHandler(fn) {
 
 /**
  * 写入审计日志
+ *
+ * @param {object} req  - express req
+ * @param {string} action
+ * @param {string} targetType
+ * @param {number} targetId
+ * @param {object} [meta] - 附加信息（写入 userAgent 字段，SQLite 不支持 JSON 列；保持可读）
  */
-async function writeAudit(req, action, targetType, targetId) {
+async function writeAudit(req, action, targetType, targetId, meta) {
   try {
+    const suffix = meta ? ` | ${JSON.stringify(meta)}` : '';
     await prisma.auditLog.create({
       data: {
         userId: req.user?.id || null,
@@ -31,7 +38,7 @@ async function writeAudit(req, action, targetType, targetId) {
         targetType,
         targetId,
         ip: req.ip,
-        userAgent: req.headers['user-agent'],
+        userAgent: (req.headers['user-agent'] || '') + suffix,
       },
     });
   } catch (e) {

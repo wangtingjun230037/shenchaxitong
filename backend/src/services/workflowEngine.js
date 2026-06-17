@@ -339,9 +339,14 @@ async function approve(taskId, user, comment) {
 }
 
 /**
- * 驳回：回到 DRAFT
+ * 驳回：可选择退回给发起人 / 退回至上一节点
+ *
+ * @param {number} taskId - ApprovalTask.id
+ * @param {User} user
+ * @param {string} comment
+ * @param {'CREATOR' | 'PREV_NODE'} rejectTarget - 驳回目标
  */
-async function reject(taskId, user, comment) {
+async function reject(taskId, user, comment, rejectTarget = 'CREATOR') {
   const task = await prisma.approvalTask.findUnique({
     where: { id: taskId },
     include: { plan: true },
@@ -350,6 +355,23 @@ async function reject(taskId, user, comment) {
   if (task.action !== 'PENDING') throw new Error('该任务已处理');
   if (task.roleRequired !== user.role) throw new Error('当前用户无审批权限');
 
+  const plan = task.plan;
+  const workflow = loadPlanWorkflow(plan);
+  const currentNode = workflow.nodes.find((n) => n.code === plan.currentNodeCode);
+  if (!currentNode) throw new Error('找不到当前节点定义：' + plan.currentNodeCode);
+
+  // 解析驳回目标
+  let targetNode = null;
+  if (rejectTarget === 'PREV_NODE') {
+    targetNode = findPrevious(workflow, plan.currentNodeCode);
+    if (!targetNode || !isRollbackableNode(targetNode)) {
+      throw new Error('当前节点已是流程起点，无法回退到上一审批节点');
+    }
+  } else if (rejectTarget !== 'CREATOR') {
+    throw new Error('无效的驳回目标: ' + rejectTarget);
+  }
+
+  // 1. 标记当前任务为 REJECTED
   await prisma.approvalTask.update({
     where: { id: taskId },
     data: {
@@ -359,15 +381,8 @@ async function reject(taskId, user, comment) {
       processedAt: new Date(),
     },
   });
-  await prisma.plan.update({
-    where: { id: task.planId },
-    data: {
-      status: 'DRAFT',
-      currentNode: '已驳回，待修改',
-      currentNodeCode: null,
-    },
-  });
-  // 同节点其他 PENDING 任务也置为无效（会签场景）
+
+  // 2. 同节点其他 PENDING 任务置为 OBSOLETE（会签场景）
   await prisma.approvalTask.updateMany({
     where: {
       planId: task.planId,
@@ -376,11 +391,69 @@ async function reject(taskId, user, comment) {
     },
     data: { action: 'OBSOLETE', processedAt: new Date() },
   });
-  // 通知发起人：驳回
-  const fullPlan = await prisma.plan.findUnique({ where: { id: task.planId } });
+
+  if (rejectTarget === 'PREV_NODE' && targetNode) {
+    // === 退回至上一节点 ===
+    // 3a. 为上一节点重新生成审批任务
+    const approvers = await resolveApprovers(targetNode, plan);
+    for (const userId of approvers) {
+      await prisma.approvalTask.create({
+        data: {
+          planId: plan.id,
+          nodeName: targetNode.name,
+          roleRequired: targetNode.role,
+          action: 'PENDING',
+          approverId: userId,
+        },
+      });
+    }
+    // 4a. 更新方案状态为上一节点
+    await prisma.plan.update({
+      where: { id: plan.id },
+      data: {
+        status: derivePlanStatus(targetNode.code),
+        currentNodeCode: targetNode.code,
+        currentNode: targetNode.name,
+      },
+    });
+    const fullPlan = await prisma.plan.findUnique({ where: { id: plan.id } });
+
+    // 5a. 通知发起人：被回退到某节点
+    if (fullPlan) {
+      await notify.onPlanRollback(fullPlan, comment, user.name, targetNode.name);
+    }
+    // 6a. 通知新审批人：驳回重审
+    for (const userId of approvers) {
+      try {
+        await notify.createOne(
+          userId,
+          'NEW_TASK',
+          `驳回重审：${plan.name}`,
+          `${user.name} 将方案退回至【${targetNode.name}】，请重新审批`,
+          'Plan',
+          plan.id
+        );
+      } catch (e) {
+        console.warn('驳回重审通知失败：', e.message);
+      }
+    }
+    return { rejected: true, target: 'PREV_NODE', targetNodeName: targetNode.name };
+  }
+
+  // === 退回给发起人 ===
+  await prisma.plan.update({
+    where: { id: plan.id },
+    data: {
+      status: 'DRAFT',
+      currentNode: '已驳回，待修改',
+      currentNodeCode: null,
+    },
+  });
+  const fullPlan = await prisma.plan.findUnique({ where: { id: plan.id } });
   if (fullPlan) {
     await notify.onPlanRejected(fullPlan, comment, user.name);
   }
+  return { rejected: true, target: 'CREATOR' };
 }
 
 /**
@@ -480,6 +553,8 @@ module.exports = {
   loadPlanWorkflow,
   findNext,
   findFirst,
+  findPrevious,
+  isRollbackableNode,
   resolveApprovers,
   submit,
   approve,
