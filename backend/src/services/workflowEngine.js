@@ -61,6 +61,27 @@ function findNext(workflow, currentCode) {
 }
 
 /**
+ * 查找节点的上一个节点
+ */
+function findPrevious(workflow, currentCode) {
+  if (!currentCode) return null;
+  const edge = workflow.edges.find((e) => e.target === currentCode);
+  return edge ? workflow.nodes.find((n) => n.code === edge.source) : null;
+}
+
+/**
+ * 判断节点是否可作为"驳回回退目标"：
+ * 仅 APPROVAL 节点（包含内置的 DEPT_REVIEW / ACADEMIC_REVIEW / PRESIDENT_REVIEW）可被回退
+ * 排除 START / END / NOTIFY
+ */
+function isRollbackableNode(node) {
+  if (!node) return false;
+  if (['START', 'END', 'NOTIFY'].includes(node.code)) return false;
+  // 内置审批节点或自定义 APPROVAL 节点均可
+  return ['APPROVAL', 'DEPT_REVIEW', 'ACADEMIC_REVIEW', 'PRESIDENT_REVIEW'].includes(node.code);
+}
+
+/**
  * 查找 START 之后的第一个节点
  */
 function findFirst(workflow) {
