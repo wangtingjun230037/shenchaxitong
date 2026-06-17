@@ -1,0 +1,191 @@
+// Prisma schema for 人才培养方案审核系统
+// 数据库: SQLite
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./data.db"
+}
+
+model Department {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  parentId  Int?
+  parent    Department?  @relation("DepartmentTree", fields: [parentId], references: [id])
+  children  Department[] @relation("DepartmentTree")
+  users     User[]
+  plans     Plan[]
+  createdAt DateTime @default(now())
+}
+
+model User {
+  id           Int       @id @default(autoincrement())
+  username     String    @unique
+  passwordHash String
+  name         String
+  role         String    // TEACHER | DEAN | ACADEMIC | PRESIDENT | ADMIN
+  departmentId Int?
+  department   Department? @relation(fields: [departmentId], references: [id])
+  status       String    @default("ACTIVE") // ACTIVE | DISABLED
+  createdAt    DateTime  @default(now())
+
+  createdPlans    Plan[]            @relation("PlanCreator")
+  approvalTasks   ApprovalTask[]    @relation("TaskApprover")
+  auditLogs       AuditLog[]
+  notifications   Notification[]    @relation("UserNotifications")
+  announcements   Announcement[]    @relation("AnnouncementPublisher")
+}
+
+model Plan {
+  id            Int       @id @default(autoincrement())
+  name          String
+  code          String    // 专业代码
+  major         String    // 专业名称
+  duration      String    // 学制，如 "3年"
+  studentType   String    // 生源类型：高中毕业生/中职毕业生/...
+  versionYear   Int       // 版本年份
+  departmentId  Int
+  department    Department @relation(fields: [departmentId], references: [id])
+  filePath      String?
+  fileName      String?
+  fileSize      Int?
+  fileText      String?   // 提取的纯文本缓存
+  status        String    @default("DRAFT") // DRAFT | DEPT_REVIEW | ACADEMIC_REVIEW | PRESIDENT_REVIEW | PUBLISHED
+  currentNode   String?   // 当前审批节点描述（兼容旧字段）
+  workflowId    Int?      // 关联工作流模板（可空，老 plan 保持 null）
+  workflow      Workflow? @relation(fields: [workflowId], references: [id])
+  currentNodeCode String? // 当前节点 code（自定义工作流专用）
+  workflowSnapshot String? // JSON 字符串：创建时冻结的工作流定义
+  createdById   Int
+  createdBy     User      @relation("PlanCreator", fields: [createdById], references: [id])
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  submittedAt   DateTime?
+  publishedAt   DateTime?
+
+  tasks        ApprovalTask[]
+  aiReports    AIReport[]
+
+  @@index([workflowId])
+}
+
+model ApprovalTask {
+  id           Int       @id @default(autoincrement())
+  planId       Int
+  plan         Plan      @relation(fields: [planId], references: [id], onDelete: Cascade)
+  nodeName     String    // 院长审批 / 教务处审核 / 校长签发
+  roleRequired String    // DEAN | ACADEMIC | PRESIDENT
+  approverId   Int?
+  approver     User?     @relation("TaskApprover", fields: [approverId], references: [id])
+  action       String    @default("PENDING") // PENDING | APPROVED | REJECTED
+  comment      String?
+  arrivedAt    DateTime  @default(now())
+  processedAt  DateTime?
+}
+
+model AIReport {
+  id           Int       @id @default(autoincrement())
+  planId       Int
+  plan         Plan      @relation(fields: [planId], references: [id], onDelete: Cascade)
+  dimension    String    @default("COMPLIANCE") // COMPLIANCE | INDUSTRY | GANGLUO
+  status       String    @default("PENDING") // PENDING | RUNNING | SUCCESS | FAILED
+  resultJson   String?   // JSON 字符串
+  summary      String?
+  score        Int?
+  errorMessage String?
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  createdAt    DateTime  @default(now())
+}
+
+model AuditLog {
+  id         Int      @id @default(autoincrement())
+  userId     Int?
+  user       User?    @relation(fields: [userId], references: [id])
+  action     String
+  targetType String?
+  targetId   Int?
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+}
+
+model Notification {
+  id         Int       @id @default(autoincrement())
+  userId     Int
+  user       User      @relation("UserNotifications", fields: [userId], references: [id], onDelete: Cascade)
+  type       String    // PLAN_REJECTED | PLAN_ADVANCED | PLAN_PUBLISHED |
+                        // AI_REPORT_DONE | NEW_TASK | DEPT_PLAN_SUBMITTED | ANNOUNCEMENT
+  title      String
+  body       String?
+  targetType String?   // Plan | Announcement | null
+  targetId   Int?
+  readAt     DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId, readAt, createdAt])
+  @@index([userId, type, createdAt])
+}
+
+model Announcement {
+  id            Int       @id @default(autoincrement())
+  title         String
+  body          String
+  publishedById Int
+  publishedBy   User      @relation("AnnouncementPublisher", fields: [publishedById], references: [id])
+  publishedAt   DateTime  @default(now())
+  expiresAt     DateTime?
+  status        String    @default("ACTIVE") // ACTIVE | WITHDRAWN
+
+  @@index([status, publishedAt])
+}
+
+model Workflow {
+  id          Int      @id @default(autoincrement())
+  name        String
+  description String?
+  status      String   @default("ACTIVE") // ACTIVE | ARCHIVED
+  createdById Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  nodes WorkflowNode[]
+  edges WorkflowEdge[]
+  plans Plan[]
+
+  @@index([status, createdAt])
+}
+
+model WorkflowNode {
+  id              Int      @id @default(autoincrement())
+  workflowId      Int
+  workflow        Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  code            String   // START | APPROVAL | NOTIFY | END
+  name            String
+  role            String?  // DEAN | ACADEMIC | PRESIDENT | ADMIN
+  approverScope   String?  // OWN_DEPT_DEAN | ALL_DEAN | ALL_SIGN_DEAN | CUSTOM_USERS
+  approverUserIds String?  // JSON 数组
+  notifyUserIds   String?  // JSON 数组（NOTIFY 节点用）
+
+  x               Float    @default(100)
+  y               Float    @default(100)
+  width           Float    @default(120)
+  height          Float    @default(60)
+
+  @@index([workflowId])
+}
+
+model WorkflowEdge {
+  id         Int      @id @default(autoincrement())
+  workflowId Int
+  workflow   Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  sourceId   String   // 源节点 code
+  targetId   String
+
+  @@index([workflowId])
+}

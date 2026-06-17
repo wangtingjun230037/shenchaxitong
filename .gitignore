@@ -1,0 +1,12 @@
+node_modules/
+.superpowers/
+.env
+*.db
+*.db-journal
+uploads/
+prisma/migrations/
+dist/
+.vite/
+*.log
+.DS_Store
+Thumbs.db
